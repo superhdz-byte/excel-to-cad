@@ -19,7 +19,7 @@ import pythoncom
 # ============================================================
 # ★ 設定
 # ============================================================
-EXCEL_PATH = r"F:\1.SF-Works\CAD\節点・要素番号プロット(IJCAD)1rev2.xlsx"
+EXCEL_PATH = r"F:\1.SF-Works\CAD\常時全土圧.xlsx"
 DWG_PATH   = r"F:\1.SF-Works\CAD\output.dwg"
 
 SIZE = 300.0
@@ -65,32 +65,113 @@ def connect_autocad():
     return acad
 
 
-def load_data(excel_path):
+def load_data_format_excel(excel_path):
+    import os
+    import re
+    import pandas as pd
+
     if not os.path.exists(excel_path):
         raise FileNotFoundError(f"Excelファイルが見つかりません: {excel_path}")
 
-    nodes_df = pd.read_excel(excel_path, sheet_name="座標", header=None)
-    elems_df = pd.read_excel(excel_path, sheet_name="要素", header=None)
+    df = pd.read_excel(excel_path, header=None, dtype=str)
 
+    grid_start = None
+    member_start = None
+
+    # A列だけでなく、行全体から検索する
+    for i in range(len(df)):
+        row_text = " ".join(
+            str(v) for v in df.iloc[i].tolist()
+            if pd.notna(v)
+        )
+
+        if "格点データ" in row_text:
+            grid_start = i
+
+        if "部材データ" in row_text:
+            member_start = i
+
+    if grid_start is None:
+        raise Exception("❌ ■格点データ が見つかりません")
+
+    if member_start is None:
+        raise Exception("❌ ■部材データ が見つかりません")
+
+    print(f"✅ ■格点データ 行: {grid_start + 1}")
+    print(f"✅ ■部材データ 行: {member_start + 1}")
+
+    # ============================================================
+    # 1. 格点データ解析
+    #    形式：
+    #    1  4.3840  8.5500   16  11.4740  1.3550
+    # ============================================================
     nodes = {}
-    for _, r in nodes_df.iterrows():
-        if pd.isna(r[0]) or pd.isna(r[1]) or pd.isna(r[2]):
-            continue
-        node_no = int(r[0])
-        x = float(r[1])
-        y = float(r[2])
-        nodes[node_no] = (x, y)
 
+    for i in range(grid_start + 1, member_start):
+        row_text = " ".join(
+            str(v) for v in df.iloc[i].tolist()
+            if pd.notna(v)
+        )
+
+        nums = re.findall(r"[-+]?\d+(?:\.\d+)?(?:[Ee][-+]?\d+)?", row_text)
+
+        # 左側：格点番号 X Y
+        if len(nums) >= 3:
+            try:
+                node_no = int(float(nums[0]))
+                x = float(nums[1])
+                y = float(nums[2])
+                nodes[node_no] = (x, y)
+            except Exception:
+                pass
+
+        # 右側：格点番号 X Y
+        if len(nums) >= 6:
+            try:
+                node_no = int(float(nums[3]))
+                x = float(nums[4])
+                y = float(nums[5])
+                nodes[node_no] = (x, y)
+            except Exception:
+                pass
+
+    # ============================================================
+    # 2. 部材データ解析
+    #    形式：
+    #    部材番号 i端 j端 部材長 ...
+    # ============================================================
     elements = []
-    for _, r in elems_df.iterrows():
-        if pd.isna(r[0]) or pd.isna(r[1]) or pd.isna(r[2]):
-            continue
-        eno = int(r[0])
-        i_node = int(r[1])
-        j_node = int(r[2])
-        elements.append((eno, i_node, j_node))
 
-    print(f"✅ データ読み込み完了: 節点 {len(nodes)}個 / 要素 {len(elements)}個")
+    for i in range(member_start + 1, len(df)):
+        row_text = " ".join(
+            str(v) for v in df.iloc[i].tolist()
+            if pd.notna(v)
+        )
+
+        # 次のデータブロックに入ったら終了
+        if i > member_start + 3 and "■" in row_text:
+            break
+
+        nums = re.findall(r"[-+]?\d+(?:\.\d+)?(?:[Ee][-+]?\d+)?", row_text)
+
+        if len(nums) >= 3:
+            try:
+                eno = int(float(nums[0]))
+                i_node = int(float(nums[1]))
+                j_node = int(float(nums[2]))
+                elements.append((eno, i_node, j_node))
+            except Exception:
+                pass
+
+    print(f"✅ 格点読込: {len(nodes)} 個")
+    print(f"✅ 部材読込: {len(elements)} 本")
+
+    if not nodes:
+        raise Exception("❌ 格点データを読み取れませんでした")
+
+    if not elements:
+        raise Exception("❌ 部材データを読み取れませんでした")
+
     return nodes, elements
 
 
@@ -200,7 +281,7 @@ def main():
     print("  節点・要素番号プロット → AutoCAD 2024 COM自動描画")
     print("=" * 60)
 
-    nodes, elements = load_data(EXCEL_PATH)
+    nodes, elements = load_data_format_excel(EXCEL_PATH)
 
     acad = connect_autocad()
 
